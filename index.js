@@ -19,7 +19,7 @@ module.exports = function (homebridge) {
 
     api = homebridge;
 
-    homebridge.registerAccessory("homebridge-http-door", "HTTP-DOOR", HTTP_DOOR);
+    homebridge.registerAccessory("homebridge-http-garage", "HTTP-GARAGE", HTTP_GARAGE);
 };
 
 const SwitchType = Object.freeze({
@@ -30,7 +30,7 @@ const SwitchType = Object.freeze({
     TOGGLE_REVERSE: "toggle-reverse",
 });
 
-function HTTP_DOOR(log, config) {
+function HTTP_GARAGE(log, config) {
     this.log = log;
     this.name = config.name;
     this.debug = config.debug || false;
@@ -226,7 +226,7 @@ function HTTP_DOOR(log, config) {
     }
 }
 
-HTTP_DOOR.prototype = {
+HTTP_GARAGE.prototype = {
 
     parseUrls: function (config) {
         /** @namespace config.onUrl */
@@ -303,7 +303,7 @@ HTTP_DOOR.prototype = {
 
         informationService
             .setCharacteristic(Characteristic.Manufacturer, "Pasgabriele")
-            .setCharacteristic(Characteristic.Model, "HTTP Door")
+            .setCharacteristic(Characteristic.Model, "HTTP Garage")
             .setCharacteristic(Characteristic.SerialNumber, this.serialNumber || "SW01")
             .setCharacteristic(Characteristic.FirmwareRevision, packageJSON.version);
 
