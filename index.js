@@ -19,7 +19,7 @@ module.exports = function (homebridge) {
 
     api = homebridge;
 
-    homebridge.registerAccessory("homebridge-http-switch", "HTTP-SWITCH", HTTP_SWITCH);
+    homebridge.registerAccessory("homebridge-http-door", "HTTP-DOOR", HTTP_DOOR);
 };
 
 const SwitchType = Object.freeze({
@@ -30,7 +30,7 @@ const SwitchType = Object.freeze({
     TOGGLE_REVERSE: "toggle-reverse",
 });
 
-function HTTP_SWITCH(log, config) {
+function HTTP_DOOR(log, config) {
     this.log = log;
     this.name = config.name;
     this.debug = config.debug || false;
@@ -125,7 +125,7 @@ function HTTP_SWITCH(log, config) {
         }
     }
 
-    this.homebridgeService = new Service.Switch(this.name);
+    this.homebridgeService = new Service.GarageDoorOpener(this.name);
     const onCharacteristic = this.homebridgeService.getCharacteristic(Characteristic.On)
         .on("get", this.getStatus.bind(this))
         .on("set", this.setStatus.bind(this));
@@ -226,7 +226,7 @@ function HTTP_SWITCH(log, config) {
     }
 }
 
-HTTP_SWITCH.prototype = {
+HTTP_DOOR.prototype = {
 
     parseUrls: function (config) {
         /** @namespace config.onUrl */
@@ -302,8 +302,8 @@ HTTP_SWITCH.prototype = {
         const informationService = new Service.AccessoryInformation();
 
         informationService
-            .setCharacteristic(Characteristic.Manufacturer, "Andreas Bauer")
-            .setCharacteristic(Characteristic.Model, "HTTP Switch")
+            .setCharacteristic(Characteristic.Manufacturer, "Pasgabriele")
+            .setCharacteristic(Characteristic.Model, "HTTP Door")
             .setCharacteristic(Characteristic.SerialNumber, this.serialNumber || "SW01")
             .setCharacteristic(Characteristic.FirmwareRevision, packageJSON.version);
 
