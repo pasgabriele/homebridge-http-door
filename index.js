@@ -1,520 +1,297 @@
-"use strict";
+var Service, Characteristic;
+const packageJson = require("./package.json");
+const request = require("request");
+const jp = require("jsonpath");
 
-let Service, Characteristic, api;
-
-const _http_base = require("homebridge-http-base");
-const http = _http_base.http;
-const configParser = _http_base.configParser;
-const PullTimer = _http_base.PullTimer;
-const notifications = _http_base.notifications;
-const MQTTClient = _http_base.MQTTClient;
-const Cache = _http_base.Cache;
-const utils = _http_base.utils;
-
-const packageJSON = require('./package.json');
-
-module.exports = function (homebridge) {
+module.exports = function(homebridge) {
     Service = homebridge.hap.Service;
     Characteristic = homebridge.hap.Characteristic;
-
-    api = homebridge;
-
-    homebridge.registerAccessory("homebridge-http-pasgabriele", "HTTP-PASGABRIELE", HTTP_PASGABRIELE);
+    homebridge.registerAccessory(
+        "homebridge-garage-door-shelly1",
+        "GarageDoorOpener",
+        GarageDoorOpener
+    );
 };
 
-const SwitchType = Object.freeze({
-    STATEFUL: "stateful",
-    STATELESS: "stateless",
-    STATELESS_REVERSE: "stateless-reverse",
-    TOGGLE: "toggle",
-    TOGGLE_REVERSE: "toggle-reverse",
-});
-
-function HTTP_PASGABRIELE(log, config) {
+function GarageDoorOpener(log, config) {
     this.log = log;
+    this.config = config;
+
     this.name = config.name;
-    this.debug = config.debug || false;
+    
+    this.header = config.header;
 
-    this.switchType = utils.enumValueOf(SwitchType, config.switchType, SwitchType.STATEFUL);
-    if (!this.switchType) {
-        this.log.warn(`'${this.switchType}' is a invalid switchType! Aborting...`);
-        return;
+    this.openURL = config.openURL;
+    this.closeURL = config.closeURL;
+    
+    this.openBody = confi.openBody;
+    this.closeBody = confi.closeBody;
+    this.statusBody = confi.statusBody;
+
+    this.openTime = config.openTime || 10;
+    this.closeTime = config.closeTime || 10;
+
+    this.switchOff = config.switchOff || false;
+    this.switchOffDelay = config.switchOffDelay || 2;
+
+    this.autoLock = config.autoLock || false;
+    this.autoLockDelay = config.autoLockDelay || 20;
+
+    this.manufacturer = config.manufacturer || packageJson.author.name;
+    this.serial = config.serial || packageJson.version;
+    this.model = config.model || packageJson.name;
+    this.firmware = config.firmware || packageJson.version;
+
+    this.username = config.username || null;
+    this.password = config.password || null;
+    this.timeout = config.timeout || 3000;
+
+    this.http_method = config.http_method || "GET";
+
+    this.polling = config.polling || false;
+    this.pollInterval = config.pollInterval || 120;
+
+    this.statusURL = config.statusURL;
+    this.statusKey = config.statusKey || "$.inputs[0].input";
+
+    this.statusValueOpen = config.statusValueOpen || "0";
+    this.statusValueClosed = config.statusValueClosed || "1";
+    this.statusValueOpening = config.statusValueOpening || "2";
+    this.statusValueClosing = config.statusValueClosing || "3";
+
+    if (this.username != null && this.password != null) {
+        this.auth = {
+            user: this.username,
+            pass: this.password,
+        };
     }
 
-    this.timeout = config.timeout;
-    if (typeof this.timeout !== 'number') {
-        this.timeout = 1000;
-    }
-
-    if (config.serialNumber !== undefined && typeof config.serialNumber === "string") {
-        this.serialNumber = config.serialNumber;
-    }
-
-    if (this.switchType === SwitchType.STATEFUL) {
-        this.statusPattern = /1/;
-        if (config.statusPattern) {
-            if (typeof config.statusPattern === "string")
-                this.statusPattern = new RegExp(config.statusPattern);
-            else
-                this.log.warn("Property 'statusPattern' was given in an unsupported type. Using default one!");
-        }
-
-        this.statusCache = new Cache(config.statusCache, 0);
-        if (config.statusCache && typeof config.statusCache !== "number")
-            this.log.warn("Property 'statusCache' was given in an unsupported type. Using default one!");
-    }
-
-    /** @namespace config.multipleUrlExecutionStrategy */
-    if (config.multipleUrlExecutionStrategy) {
-        const result = http.setMultipleUrlExecutionStrategy(config.multipleUrlExecutionStrategy);
-
-        if (!result)
-            this.log.warn("'multipleUrlExecutionStrategy' has an invalid value (" + config.multipleUrlExecutionStrategy + "). Continuing with defaults!");
-    }
-
-    const success = this.parseUrls(config); // parsing 'onUrl', 'offUrl', 'statusUrl'
-    if (!success) {
-        this.log.warn("Aborting...");
-        return;
-    }
-
-    /** @namespace config.httpMethod */
-    if (config.httpMethod) { // if we have it defined globally override the existing one of ON and OFF config object
-        this.log("Global 'httpMethod' is specified. Overriding method of on and off!");
-        if (this.on)
-            this.on.forEach(urlObject => urlObject.method = config.httpMethod);
-        if (this.off)
-            this.off.forEach(urlObject => urlObject.method = config.httpMethod);
-
-        /*
-         * New way would expect to also override method of this.status, but old implementation used fixed 'httpMethod' (GET)
-         * for this.status and was unaffected by this config property. So we leave this.status unaffected for now to maintain
-         * backwards compatibility.
-         */
-    }
-
-    if (config.auth) {
-        if (!(config.auth.username && config.auth.password))
-            this.log("'auth.username' and/or 'auth.password' was not set!");
-        else {
-            if (this.on) {
-                this.on.forEach(urlObject => {
-                    urlObject.auth.username = config.auth.username;
-                    urlObject.auth.password = config.auth.password;
-
-                    if (typeof config.auth.sendImmediately === "boolean")
-                        urlObject.auth.sendImmediately = config.auth.sendImmediately;
-                });
-            }
-            if (this.off) {
-                this.off.forEach(urlObject => {
-                    urlObject.auth.username = config.auth.username;
-                    urlObject.auth.password = config.auth.password;
-
-                    if (typeof config.auth.sendImmediately === "boolean")
-                        urlObject.auth.sendImmediately = config.auth.sendImmediately;
-                });
-            }
-            if (this.status) {
-                this.status.auth.username = config.auth.username;
-                this.status.auth.password = config.auth.password;
-
-                if (typeof config.auth.sendImmediately === "boolean")
-                    this.status.auth.sendImmediately = config.auth.sendImmediately;
-            }
-        }
-    }
-
-    this.homebridgeService = new Service.GarageDoorOpener(this.name);
-    const onCharacteristic = this.homebridgeService.getCharacteristic(Characteristic.On)
-        .on("get", this.getStatus.bind(this))
-        .on("set", this.setStatus.bind(this));
-
-
-    switch (this.switchType) {
-        case SwitchType.TOGGLE_REVERSE:
-        case SwitchType.STATELESS_REVERSE:
-            onCharacteristic.updateValue(true);
-            break;
-    }
-
-    /** @namespace config.pullInterval */
-    if (config.pullInterval) {
-        if (this.switchType === SwitchType.STATEFUL) {
-            this.pullTimer = new PullTimer(this.log, config.pullInterval, this.getStatus.bind(this), value => {
-                this.homebridgeService.getCharacteristic(Characteristic.On).updateValue(value);
-            });
-            this.pullTimer.start();
-        }
-        else
-            this.log("'pullInterval' was specified, however switch is stateless. Ignoring property and not enabling pull updates!");
-    }
-
-    if (config.notificationID) {
-        if (this.switchType === SwitchType.STATEFUL
-            || this.switchType === SwitchType.TOGGLE || this.switchType === SwitchType.TOGGLE_REVERSE) {
-            /** @namespace config.notificationPassword */
-            /** @namespace config.notificationID */
-            notifications.enqueueNotificationRegistrationIfDefined(api, log, config.notificationID, config.notificationPassword, this.handleNotification.bind(this));
-        }
-        else
-            this.log("'notificationID' was specified, however switch is stateless. Ignoring property and not enabling notifications!");
-    }
-
-    if (config.mqtt) {
-        if (this.switchType === SwitchType.STATEFUL
-            || this.switchType === SwitchType.TOGGLE || this.switchType === SwitchType.TOGGLE_REVERSE) {
-            let options;
-            try {
-                options = configParser.parseMQTTOptions(config.mqtt)
-            } catch (error) {
-                this.log.error("Error occurred while parsing MQTT property: " + error.message);
-                this.log.error("MQTT will not be enabled!");
-            }
-
-            if (options) {
-                try {
-                    this.mqttClient = new MQTTClient(this.homebridgeService, options, this.log);
-                    this.mqttClient.connect();
-                } catch (error) {
-                    this.log.error("Error occurred creating mqtt client: " + error.message);
-                }
-            }
-        }
-        else
-            this.log("'mqtt' options were specified, however switch is stateless. Ignoring it!");
-    }
-
-    this.log("Switch successfully configured...");
-    if (this.debug) {
-        this.log("Switch started with the following options: ");
-        this.log("  - switchType: " + this.switchType);
-        if (this.switchType === SwitchType.STATEFUL)
-            this.log("  - statusPattern: " + this.statusPattern);
-
-        if (this.auth)
-            this.log("  - auth options: " + JSON.stringify(this.auth));
-
-        if (this.on)
-            this.log("  - onUrls: " + JSON.stringify(this.on));
-        if (this.off)
-            this.log("  - offUrls: " + JSON.stringify(this.off));
-        if (this.status)
-            this.log("  - statusUrl: " + JSON.stringify(this.status));
-
-        if (this.switchType === SwitchType.STATELESS || this.switchType === SwitchType.STATELESS_REVERSE)
-            this.log("  - timeout for stateless switch: " + this.timeout);
-
-        if (this.pullTimer)
-            this.log("  - pullTimer started with interval " + config.pullInterval);
-
-        if (config.notificationID)
-            this.log("  - notificationsID specified: " + config.notificationID);
-
-        if (this.mqttClient) {
-            const options = this.mqttClient.mqttOptions;
-            this.log(`  - mqtt client instantiated: ${options.protocol}://${options.host}:${options.port}`);
-            this.log("     -> subscribing to topics:");
-
-            for (const topic in this.mqttClient.subscriptions) {
-                if (!this.mqttClient.subscriptions.hasOwnProperty(topic))
-                    continue;
-
-                this.log(`         - ${topic}`);
-            }
-        }
-    }
+    this.service = new Service.GarageDoorOpener(this.name);
 }
 
-HTTP_PASGABRIELE.prototype = {
-
-    parseUrls: function (config) {
-        /** @namespace config.onUrl */
-        if (this.switchType !== SwitchType.STATELESS_REVERSE) {
-            if (config.onUrl) {
-                try {
-                    this.on = this.switchType === SwitchType.STATEFUL
-                        ? [configParser.parseUrlProperty(config.onUrl)]
-                        : configParser.parseMultipleUrlProperty(config.onUrl);
-                } catch (error) {
-                    this.log.warn("Error occurred while parsing 'onUrl': " + error.message);
-                    return false;
-                }
-            }
-            else {
-                this.log.warn(`Property 'onUrl' is required when using switchType '${this.switchType}'`);
-                return false;
-            }
-        }
-        else if (config.onUrl)
-            this.log.warn(`Property 'onUrl' is defined though it is not used with switchType ${this.switchType}. Ignoring it!`);
-
-        /** @namespace config.offUrl */
-        if (this.switchType !== SwitchType.STATELESS) {
-            if (config.offUrl) {
-                try {
-                    this.off = this.switchType === SwitchType.STATEFUL
-                        ? [configParser.parseUrlProperty(config.offUrl)]
-                        : configParser.parseMultipleUrlProperty(config.offUrl);
-                } catch (error) {
-                    this.log.warn("Error occurred while parsing 'offUrl': " + error.message);
-                    return false;
-                }
-            }
-            else {
-                this.log.warn(`Property 'offUrl' is required when using switchType '${this.switchType}'`);
-                return false;
-            }
-        }
-        else if (config.offUrl)
-            this.log.warn(`Property 'offUrl' is defined though it is not used with switchType ${this.switchType}. Ignoring it!`);
-
-        if (this.switchType === SwitchType.STATEFUL) {
-            /** @namespace config.statusUrl */
-            if (config.statusUrl) {
-                try {
-                    this.status = configParser.parseUrlProperty(config.statusUrl);
-                } catch (error) {
-                    this.log.warn("Error occurred while parsing 'statusUrl': " + error.message);
-                    return false;
-                }
-            }
-            else {
-                this.log.warn(`Property 'statusUrl' is required when using switchType '${this.switchType}'`);
-                return false;
-            }
-        }
-        else if (config.statusUrl)
-            this.log.warn(`Property 'statusUrl' is defined though it is not used with switchType ${this.switchType}. Ignoring it!`);
-
-        return true;
-    },
-
-    identify: function (callback) {
+GarageDoorOpener.prototype = {
+    identify: function(callback) {
         this.log("Identify requested!");
         callback();
     },
 
-    getServices: function () {
-        if (!this.homebridgeService)
-            return [];
-
-        const informationService = new Service.AccessoryInformation();
-
-        informationService
-            .setCharacteristic(Characteristic.Manufacturer, "Pasgabriele")
-            .setCharacteristic(Characteristic.Model, "HTTP Pasgabriele")
-            .setCharacteristic(Characteristic.SerialNumber, this.serialNumber || "SW01")
-            .setCharacteristic(Characteristic.FirmwareRevision, packageJSON.version);
-
-        return [informationService, this.homebridgeService];
+    _httpRequest: function(url, headers, body, method, callback) {
+        request({
+                url: url,
+                headers: headers,
+                body: body,
+                method: this.http_method,
+                timeout: this.timeout,
+                rejectUnauthorized: false,
+                auth: this.auth,
+            },
+            function(error, response, body) {
+                callback(error, response, body);
+            }
+        );
     },
 
-    /** @namespace body.characteristic */
-    handleNotification: function(body) {
-        const value = body.value;
+    _getStatus: function(callback) {
+        var url = this.statusURL;
+		var body = this.statusBody;
+		var headers = this.header;
 
-        let characteristic;
-        switch (body.characteristic) {
-            case "On":
-                characteristic = Characteristic.On;
-                break;
-            default:
-                this.log("Encountered unknown characteristic handling notification: " + body.characteristic);
-                return;
+        if (this.config.debug) {
+            this.log.debug("Getting status: %s", url);
         }
 
-        if (this.debug)
-            this.log("Updating '" + body.characteristic + "' to new value: " + body.value);
+        this._httpRequest(
+            url,
+            headers,
+            body,
+            this.http_method,
+            function(error, response, responseBody) {
+                if (error) {
+                    this.log.error("Error getting status: %s", error.message);
+                    this.service
+                        .getCharacteristic(Characteristic.CurrentDoorState)
+                        .updateValue(new Error("Polling failed"));
+                    callback(error);
+                } else {
+                    let statusValue = 0;
 
-        if (this.pullTimer)
-            this.pullTimer.resetTimer();
+                    if (this.statusKey) {
+                        var originalStatusValue = jp
+                            .query(
+                                typeof responseBody === "string" ?
+                                JSON.parse(responseBody) :
+                                responseBody,
+                                this.statusKey,
+                                1
+                            )
+                            .pop();
 
-        this.homebridgeService.getCharacteristic(characteristic).updateValue(value);
-    },
-
-    getStatus: function (callback) {
-        if (this.pullTimer)
-            this.pullTimer.resetTimer();
-
-        switch (this.switchType) {
-            case SwitchType.STATEFUL:
-                if (!this.statusCache.shouldQuery()) {
-                    const value = this.homebridgeService.getCharacteristic(Characteristic.On).value;
-                    if (this.debug)
-                        this.log(`getStatus() returning cached value '${value? "ON": "OFF"}'${this.statusCache.isInfinite()? " (infinite cache)": ""}`);
-                    callback(null, value);
-                    break;
-                }
-
-                if (this.debug)
-                    this.log("getStatus() doing http request...");
-
-                http.httpRequest(this.status, (error, response, body) => {
-                    if (error) {
-                        this.log("getStatus() failed: %s", error.message);
-                        callback(error);
-                    }
-                    else if (!(http.isHttpSuccessCode(response.statusCode) || http.isHttpRedirectCode(response.statusCode))) {
-                        this.log("getStatus() http request returned http error code: %s", response.statusCode);
-                        callback(new Error("Got html error code " + response.statusCode));
-                    }
-                    else {
-                        if (this.debug)
-                            this.log(`getStatus() request returned successfully (${response.statusCode}). Body: '${body}'`);
-
-                        if (http.isHttpRedirectCode(response.statusCode)) {
-                            this.log("getStatus() http request return with redirect status code (3xx). Accepting it anyways");
+                        if (new RegExp(this.statusValueOpen).test(originalStatusValue)) {
+                            statusValue = 0;
+                        } else if (
+                            new RegExp(this.statusValueClosed).test(originalStatusValue)
+                        ) {
+                            statusValue = 1;
+                        } else if (
+                            new RegExp(this.statusValueOpening).test(originalStatusValue)
+                        ) {
+                            statusValue = 2;
+                        } else if (
+                            new RegExp(this.statusValueClosing).test(originalStatusValue)
+                        ) {
+                            statusValue = 3;
                         }
 
-                        const switchedOn = this.statusPattern.test(body);
-                        if (this.debug)
-                            this.log("Switch is currently %s", switchedOn? "ON": "OFF");
-
-                        this.statusCache.queried(); // we only update lastQueried on successful query
-                        callback(null, switchedOn);
+                        if (this.config.debug) {
+                            this.log.debug(
+                                "Transformed status value from %s to %s (%s)",
+                                originalStatusValue,
+                                statusValue,
+                                this.statusKey
+                            );
+                        }
+                    } else {
+                        statusValue = responseBody;
                     }
-                });
-                break;
-            case SwitchType.STATELESS:
-                callback(null, false);
-                break;
-            case SwitchType.STATELESS_REVERSE:
-                callback(null, true);
-                break;
-            case SwitchType.TOGGLE:
-            case SwitchType.TOGGLE_REVERSE:
-                callback(null, this.homebridgeService.getCharacteristic(Characteristic.On).value);
-                break;
+                    this.service
+                        .getCharacteristic(Characteristic.CurrentDoorState)
+                        .updateValue(statusValue);
+                    this.service
+                        .getCharacteristic(Characteristic.TargetDoorState)
+                        .updateValue(statusValue);
 
-            default:
-                callback(new Error("Unrecognized switch type"));
-                break;
-        }
-    },
+                    if (this.config.debug) {
+                        this.log.debug("Updated door state to: %s", statusValue);
+                    }
 
-    setStatus: function (on, callback) {
-        if (this.pullTimer)
-            this.pullTimer.resetTimer();
-
-        switch (this.switchType) {
-            case SwitchType.STATEFUL:
-                this._makeSetRequest(on, callback);
-                break;
-            case SwitchType.STATELESS:
-                if (!on) {
                     callback();
-                    break;
                 }
+            }.bind(this)
+        );
+    },
 
-                this._makeSetRequest(true, callback);
-                break;
-            case SwitchType.STATELESS_REVERSE:
-                if (on) {
+    setTargetDoorState: function(value, callback) {
+        var url;
+
+        this.log.debug("Setting targetDoorState to %s", value);
+
+        if (value === 1) {
+            url = this.closeURL;
+            body = this.closeBody;
+            headers = this.header;
+        } else {
+            url = this.openURL;
+            body = this.openBody;
+            headers = this.header;
+        }
+
+        this._httpRequest(
+            url,
+            headers,
+            body,
+            this.http_method,
+            function(error, response, responseBody) {
+                if (error) {
+                    this.log.warn("Error setting targetDoorState: %s", error.message);
+                    callback(error);
+                } else {
+                    if (value === 1) {
+                        this.log("Started closing");
+                        this.simulateClose();
+                    } else {
+                        this.log("Started opening");
+                        if (this.switchOff) {
+                            this.switchOffFunction();
+                        }
+                        if (this.autoLock) {
+                            this.autoLockFunction();
+                        }
+                        this.simulateOpen();
+                    }
                     callback();
-                    break;
                 }
+            }.bind(this)
+        );
+    },
 
-                this._makeSetRequest(false, callback);
-                break;
-            case SwitchType.TOGGLE:
-            case SwitchType.TOGGLE_REVERSE:
-                this._makeSetRequest(on, callback);
-                break;
+    simulateOpen: function() {
+        this.service
+            .getCharacteristic(Characteristic.CurrentDoorState)
+            .updateValue(2);
+        setTimeout(() => {
+            this.service
+                .getCharacteristic(Characteristic.CurrentDoorState)
+                .updateValue(0);
+            this.log("Finished opening");
+        }, this.openTime * 1000);
+    },
 
-            default:
-                callback(new Error("Unrecognized switch type"));
-                break;
+    simulateClose: function() {
+        this.service
+            .getCharacteristic(Characteristic.CurrentDoorState)
+            .updateValue(3);
+        setTimeout(() => {
+            this.service
+                .getCharacteristic(Characteristic.CurrentDoorState)
+                .updateValue(1);
+            this.log("Finished closing");
+        }, this.closeTime * 1000);
+    },
+
+    autoLockFunction: function() {
+        this.log("Waiting %s seconds for autolock", this.autoLockDelay);
+        setTimeout(() => {
+            this.service.setCharacteristic(Characteristic.TargetDoorState, 1);
+            this.log("Autolocking...");
+        }, this.autoLockDelay * 1000);
+    },
+
+    switchOffFunction: function() {
+        this.log("Waiting %s seconds for switch off", this.switchOffDelay);
+        setTimeout(() => {
+            this.log("SwitchOff...");
+            this._httpRequest(
+                this.closeURL,
+                this.header,
+                this.closeBody,
+                this.http_method,
+                function(error, response, responseBody) {}.bind(this)
+            );
+        }, this.switchOffDelay * 1000);
+    },
+
+    getServices: function() {
+        this.informationService = new Service.AccessoryInformation();
+
+        this.informationService
+            .setCharacteristic(Characteristic.Manufacturer, this.manufacturer)
+            .setCharacteristic(Characteristic.Model, this.model)
+            .setCharacteristic(Characteristic.SerialNumber, this.serial)
+            .setCharacteristic(Characteristic.FirmwareRevision, this.firmware);
+
+        this.service
+            .getCharacteristic(Characteristic.TargetDoorState)
+            .on("set", this.setTargetDoorState.bind(this));
+
+        if (this.polling) {
+            this._getStatus(function() {});
+
+            setInterval(
+                function() {
+                    this._getStatus(function() {});
+                }.bind(this),
+                this.pollInterval * 1000
+            );
+        } else {
+            this.service
+                .getCharacteristic(Characteristic.CurrentDoorState)
+                .updateValue(1);
+
+            this.service
+                .getCharacteristic(Characteristic.TargetDoorState)
+                .updateValue(1);
         }
+
+        return [this.informationService, this.service];
     },
-
-    _makeSetRequest: function (on, callback) {
-        const urlObjectArray = on? this.on: this.off;
-
-        if (this.debug)
-            this.log("setStatus() doing http request...");
-
-        http.multipleHttpRequests(urlObjectArray, results => {
-            const errors = [];
-            const successes = [];
-
-            results.forEach((result, i) => {
-                if (result.error) {
-                    errors.push({
-                        index: i,
-                        error: result.error
-                    });
-                }
-                else if (!(http.isHttpSuccessCode(result.response.statusCode) || http.isHttpRedirectCode(result.response.statusCode))) {
-                    errors.push({
-                        index: i,
-                        error: new Error(`HTTP request returned with error code ${result.response.statusCode}`),
-                        value: result.body
-                    });
-                }
-                else {
-                    if (http.isHttpRedirectCode(result.response.statusCode)) {
-                        this.log("setStatus() http request return with redirect status code (3xx). Accepting it anyways");
-                    }
-
-                    successes.push({
-                        index: i,
-                        value: result.body
-                    });
-                }
-            });
-
-            if (errors.length > 0) {
-                if (successes.length === 0) {
-                    if (errors.length === 1) {
-                        const errorObject = errors[0];
-                        const errorMessage = errorObject.error.message;
-                        this.log(`Error occurred setting state of switch: ${errorMessage}`);
-
-                        if (errorMessage && !errorMessage.startsWith("HTTP request returned with error code "))
-                            this.log(errorObject.error);
-                        else if (errorObject.value && this.debug)
-                            this.log("Body of set response is: " + errorObject.value);
-                    }
-                    else {
-                        this.log(`Error occurred setting state of switch with every request (${errors.length}):`);
-                        this.log(errors);
-                    }
-                }
-                else {
-                    this.log(`${successes.length} requests successfully set switch to ${on? "ON": "OFF"}; ${errors.length} encountered and error:`);
-                    this.log(errors);
-                }
-
-                callback(new Error("Some or every request returned with an error. See above!"));
-            }
-            else {
-                if (this.debug)
-                    this.log(`Successfully set switch to ${on ? "ON" : "OFF"}${successes.length > 1 ? ` with every request (${successes.length})` : ""}`);
-                callback();
-            }
-
-            this.resetSwitchWithTimeoutIfStateless();
-        });
-    },
-
-    resetSwitchWithTimeoutIfStateless: function () {
-        switch (this.switchType) {
-            case SwitchType.STATELESS:
-                this.log("Resetting switch to OFF");
-
-                setTimeout(() => {
-                    this.homebridgeService.setCharacteristic(Characteristic.On, false);
-                }, this.timeout);
-                break;
-            case SwitchType.STATELESS_REVERSE:
-                this.log("Resetting switch to ON");
-
-                setTimeout(() => {
-                    this.homebridgeService.setCharacteristic(Characteristic.On, true);
-                }, this.timeout);
-                break;
-        }
-    },
-
 };
