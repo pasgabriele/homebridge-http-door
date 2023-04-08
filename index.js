@@ -7,7 +7,7 @@ module.exports = function(homebridge) {
     Service = homebridge.hap.Service;
     Characteristic = homebridge.hap.Characteristic;
     homebridge.registerAccessory(
-        "homebridge-garage-door-shelly1",
+        "homebridge-http-pasgabriele",
         "GarageDoorOpener",
         GarageDoorOpener
     );
